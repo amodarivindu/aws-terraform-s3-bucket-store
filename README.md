@@ -223,9 +223,21 @@ The current configuration creates three S3 buckets:
 - The `etag` ensures files are re-uploaded if their content changes.
 - To upload to a different bucket, change the bucket key in the `aws_s3_object` resource from `["dev"]` to `["prod"]` or `["staging"]`.
 
-### S3 Bucket Policy
+### S3 Bucket Policy and Public Access Block
 
-For the dev bucket (`amoda-dev-bucket-001`), you can apply a bucket policy to allow public read access to the uploaded images. This is useful for serving static content like images publicly.
+For the dev bucket (`amoda-dev-bucket-001`), the configuration uses both an S3 bucket policy and an S3 public access block resource. This combination is required when you want the bucket to be publicly readable while avoiding AWS blocking the policy.
+
+#### Public Access Behavior
+
+| Action                           | Result                   |
+| -------------------------------- | ------------------------ |
+| Disable public access block only | Bucket CAN become public |
+| Add bucket policy only           | AWS blocks it            |
+| Both together                    | Public access works      |
+
+- **Disable public access block only**: This turns off the built-in block settings, so the bucket is capable of becoming public if a suitable policy or ACL is attached.
+- **Add bucket policy only**: If the AWS public access block is still enabled, AWS will block the policy and prevent public access.
+- **Both together**: Disabling the public access block and then attaching the public read policy allows the bucket to be publicly reachable.
 
 #### Example Bucket Policy
 
@@ -246,40 +258,67 @@ For the dev bucket (`amoda-dev-bucket-001`), you can apply a bucket policy to al
 
 #### Policy Explanation
 
-- **Version**: `"2012-10-17"` - This is the IAM policy language version. It's the standard version for most AWS policies.
+- **Version**: `"2012-10-17"` - The IAM policy language version.
 - **Statement**: An array of policy statements. This policy has one statement.
-  - **Sid**: `"PublicReadGetObject"` - A unique identifier for this statement (optional but recommended for clarity).
-  - **Effect**: `"Allow"` - Grants permission for the specified action.
-  - **Principal**: `"*"` - Applies to all users (public access). This makes the bucket publicly readable.
-  - **Action**: `"s3:GetObject"` - Allows reading (downloading) objects from the bucket.
-  - **Resource**: `"arn:aws:s3:::amoda-dev-bucket-001/*"` - Applies to all objects (`/*`) in the specified bucket (`amoda-dev-bucket-001`).
+  - **Sid**: `"PublicReadGetObject"` - A unique identifier for the statement.
+  - **Effect**: `"Allow"` - Grants the permission.
+  - **Principal**: `"*"` - Applies to all users, making the bucket publicly readable.
+  - **Action**: `"s3:GetObject"` - Allows downloading objects from the bucket.
+  - **Resource**: `"arn:aws:s3:::amoda-dev-bucket-001/*"` - Targets all objects in the `amoda-dev-bucket-001` bucket.
 
 #### Applying the Policy in Terraform
 
-To apply this policy using Terraform, add the following resource to your `main.tf`:
+The current `main.tf` already includes both a public access block resource and a bucket policy for the dev bucket.
 
 ```hcl
-resource "aws_s3_bucket_policy" "dev_bucket_policy" {
+resource "aws_s3_bucket_public_access_block" "public_access" {
   bucket = aws_s3_bucket.multiple_buckets["dev"].id
+
+  block_public_acls       = false
+  block_public_policy     = false
+  ignore_public_acls      = false
+  restrict_public_buckets = false
+}
+
+resource "aws_s3_bucket_policy" "public_policy" {
+  bucket = aws_s3_bucket.multiple_buckets["dev"].id
+
+  depends_on = [
+    aws_s3_bucket_public_access_block.public_access
+  ]
 
   policy = jsonencode({
     Version = "2012-10-17"
+
     Statement = [
       {
-        Sid       = "PublicReadGetObject"
-        Effect    = "Allow"
+        Sid = "PublicReadGetObject"
+
+        Effect = "Allow"
+
         Principal = "*"
-        Action    = "s3:GetObject"
-        Resource  = "${aws_s3_bucket.multiple_buckets["dev"].arn}/*"
+
+        Action = [
+          "s3:GetObject"
+        ]
+
+        Resource = [
+          "${aws_s3_bucket.multiple_buckets["dev"].arn}/*"
+        ]
       }
     ]
   })
 }
 ```
 
+- The `aws_s3_bucket_public_access_block` resource disables the AWS public access block settings for the dev bucket.
+- The `aws_s3_bucket_policy` resource attaches the public read policy.
+- `depends_on` ensures the public access block configuration is applied before the bucket policy.
+
 #### Security Considerations
 
 - **Public Access Warning**: This policy grants public read access to all objects in the bucket. Anyone with the URL can access the files. Use this only for public content like website assets.
+- **Public Access Block**: AWS public access block settings are designed to prevent accidental public exposure. Disabling them intentionally should be done only when you need a public bucket.
 - **Production Use**: For production environments, consider using Amazon CloudFront with Origin Access Identity (OAI) for secure, cached public access without making the bucket fully public.
 - **Encryption**: Even with public access, objects remain encrypted at rest with AES-256.
 - **Cost**: Public buckets may incur additional costs if accessed frequently.
@@ -344,3 +383,466 @@ This Terraform project provides a complete solution for:
 - Tracking and detecting file changes automatically
 
 It is suitable for development, staging, and production deployments with environment-specific configurations.
+
+---
+
+# Amazon S3 Concepts Overview
+
+This section provides a comprehensive overview of Amazon S3 (Simple Storage Service) concepts and features that are relevant to this Terraform project.
+
+## Amazon S3 Overview
+
+Amazon S3 (Simple Storage Service) is AWS object storage used to store files such as:
+
+* images
+* videos
+* backups
+* logs
+* static websites
+* documents
+
+S3 is highly durable, scalable, and globally accessible.
+
+## Core S3 Concepts
+
+| Concept       | Meaning                          |
+| ------------- | -------------------------------- |
+| Bucket        | Container for objects/files      |
+| Object        | Actual file stored               |
+| Key           | File name/path                   |
+| Region        | AWS location of bucket           |
+| Storage Class | Type of storage tier             |
+| Versioning    | Keeps old file versions          |
+| Lifecycle     | Automates file movement/deletion |
+| Encryption    | Protects stored data             |
+| Policy        | Controls access                  |
+
+## 1. Buckets
+
+A bucket is like a top-level folder.
+
+Example:
+
+```
+amoda-images-bucket
+```
+
+Rules:
+
+* globally unique name
+* created in a region
+* stores objects/files
+
+## 2. Objects
+
+Objects are files stored in S3.
+
+Example:
+
+```
+cat.png
+invoice.pdf
+backup.zip
+```
+
+Each object contains:
+
+* data
+* metadata
+* key (path/name)
+
+## 3. Object Keys
+
+The key is the file path.
+
+Example:
+
+```
+images/cat.png
+```
+
+Here:
+
+* `images/` = logical folder
+* `cat.png` = object
+
+S3 is actually flat storage.
+Folders are virtual.
+
+## 4. Storage Classes
+
+S3 supports multiple storage tiers.
+
+### S3 Standard
+
+Best for:
+
+* frequently accessed data
+
+Features:
+
+* high availability
+* low latency
+
+Examples:
+
+* websites
+* apps
+* active images
+
+### S3 Intelligent-Tiering
+
+AWS automatically moves files between hot/cold tiers.
+
+Best for:
+
+* unknown access patterns
+
+### S3 Standard-IA
+
+IA = Infrequent Access
+
+Cheaper storage, higher retrieval cost.
+
+Best for:
+
+* backups
+* older files
+
+### S3 One Zone-IA
+
+Stored in one availability zone only.
+
+Cheaper but less resilient.
+
+### Glacier Instant Retrieval
+
+Archive with quick retrieval.
+
+### Glacier Flexible Retrieval
+
+Very cheap archive.
+
+Retrieval:
+
+* minutes to hours
+
+### Glacier Deep Archive
+
+Cheapest long-term storage.
+
+Best for:
+
+* compliance
+* legal archives
+
+Retrieval:
+
+* hours
+
+## 5. Versioning
+
+Versioning keeps multiple versions of objects.
+
+Without versioning:
+
+```
+file.txt
+```
+
+new upload replaces old file.
+
+With versioning:
+
+```
+file.txt (v1)
+file.txt (v2)
+file.txt (v3)
+```
+
+Benefits:
+
+* recover deleted files
+* rollback accidental changes
+* protect data
+
+### Terraform Example
+
+```hcl
+resource "aws_s3_bucket_versioning" "versioning" {
+  bucket = aws_s3_bucket.my_bucket.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+```
+
+## 6. Lifecycle Policies
+
+Lifecycle automates object management.
+
+Examples:
+
+* move old files to Glacier
+* delete logs after 30 days
+* archive backups
+
+### Example Lifecycle
+
+| After    | Action              |
+| -------- | ------------------- |
+| 30 days  | Move to Standard-IA |
+| 90 days  | Move to Glacier     |
+| 365 days | Delete              |
+
+### Terraform Example
+
+```hcl
+resource "aws_s3_bucket_lifecycle_configuration" "lifecycle" {
+  bucket = aws_s3_bucket.my_bucket.id
+
+  rule {
+    id     = "archive-rule"
+    status = "Enabled"
+
+    transition {
+      days          = 30
+      storage_class = "STANDARD_IA"
+    }
+
+    transition {
+      days          = 90
+      storage_class = "GLACIER"
+    }
+
+    expiration {
+      days = 365
+    }
+  }
+}
+```
+
+## 7. Encryption
+
+Encryption protects data.
+
+### SSE-S3 (AES256)
+
+AWS manages encryption keys.
+
+Easy default option.
+
+```hcl
+server_side_encryption = "AES256"
+```
+
+AWS handles everything.
+
+### SSE-KMS
+
+Uses AWS KMS (Key Management Service).
+
+More secure and controllable.
+
+Benefits:
+
+* audit logs
+* key rotation
+* access control
+* compliance
+
+### KMS Example
+
+```hcl
+resource "aws_s3_bucket_server_side_encryption_configuration" "kms" {
+  bucket = aws_s3_bucket.my_bucket.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      kms_master_key_id = aws_kms_key.mykey.arn
+      sse_algorithm     = "aws:kms"
+    }
+  }
+}
+```
+
+### Encryption Types Summary
+
+| Type    | Managed By | Use Case              |
+| ------- | ---------- | --------------------- |
+| SSE-S3  | AWS        | Simple encryption     |
+| SSE-KMS | AWS KMS    | Enterprise/compliance |
+| SSE-C   | Customer   | Customer-managed keys |
+
+## 8. Access Control
+
+### Private Bucket
+
+Default setting.
+
+Only owner can access.
+
+### Public Access
+
+Anyone can access objects.
+
+Used for:
+
+* public images
+* static websites
+
+Requires:
+
+* public access block disabled
+* bucket policy
+
+### IAM Access
+
+Access controlled via:
+
+* IAM users
+* IAM roles
+* policies
+
+Best for applications.
+
+### Pre-Signed URLs
+
+Temporary access URLs.
+
+Example:
+
+* valid for 1 hour
+
+Used for:
+
+* secure downloads
+* private sharing
+
+## 9. Bucket Policies
+
+Bucket policies are JSON permission documents.
+
+Example:
+
+```json
+{
+  "Effect": "Allow",
+  "Principal": "*",
+  "Action": "s3:GetObject"
+}
+```
+
+Controls:
+
+* who
+* what actions
+* which resources
+
+## 10. Static Website Hosting
+
+S3 can host websites.
+
+Example:
+
+* HTML/CSS/JS sites
+
+Features:
+
+* static only
+* no backend server
+
+## 11. Replication
+
+Automatically copies objects to another bucket.
+
+Types:
+
+* Same Region Replication
+* Cross Region Replication
+
+Use cases:
+
+* disaster recovery
+* compliance
+* multi-region apps
+
+## 12. Event Notifications
+
+S3 can trigger:
+
+* Lambda
+* SQS
+* SNS
+
+When:
+
+* object uploaded
+* deleted
+* modified
+
+## 13. Multipart Upload
+
+Large files upload in chunks.
+
+Benefits:
+
+* faster
+* resumable
+* reliable
+
+Best for:
+
+* videos
+* backups
+* large archives
+
+## 14. S3 Access Patterns
+
+| Access Type    | Description               |
+| -------------- | ------------------------- |
+| Public         | Anyone can access         |
+| IAM User       | Specific AWS users        |
+| IAM Role       | Applications/services     |
+| Bucket Policy  | Bucket-wide permissions   |
+| ACL            | Legacy object permissions |
+| Pre-Signed URL | Temporary access          |
+
+## 15. Common Real-World Uses
+
+| Use Case          | Example         |
+| ----------------- | --------------- |
+| Image hosting     | Websites        |
+| Backup storage    | Databases       |
+| Log storage       | CloudTrail logs |
+| Static websites   | React frontend  |
+| Data lakes        | Analytics       |
+| Media storage     | Videos/audio    |
+| Terraform backend | tfstate files   |
+
+## Recommended Best Practices
+
+| Practice             | Why                   |
+| -------------------- | --------------------- |
+| Enable versioning    | Recover files         |
+| Use encryption       | Security              |
+| Use lifecycle        | Cost optimization     |
+| Keep buckets private | Security              |
+| Use IAM roles        | Better access control |
+| Avoid public buckets | Reduce risk           |
+| Enable logging       | Auditing              |
+
+## Simple Architecture View
+
+```
+User/App
+    ↓
+IAM / Bucket Policy
+    ↓
+S3 Bucket
+    ↓
+Storage Class
+    ↓
+Lifecycle / Versioning / Encryption
+```
